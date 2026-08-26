@@ -324,11 +324,14 @@ const WORDS=[
  {w:"さくらんぼ",e:"🍒"},{w:"ゆきだるま",e:"⛄"}
 ];
 const wlen=w=>[...w].length;
-function level(){return Math.min(5,1+Math.floor(state.totalStars/12));}
-function maxWordLen(){return Math.min(5,level()+1);}
+const MAX_LEVEL=50;
+function levelCum(L){return (L-1)*(L+2);}          // レベルLに到達するのに必要な合計スター
+function level(){let L=1;while(L<MAX_LEVEL&&state.totalStars>=levelCum(L+1))L++;return L;}
+function tier(){return Math.min(5,1+Math.floor(state.totalStars/12));} // もんだいの難しさ（最大5文字）
+function maxWordLen(){return Math.min(5,tier()+1);}
 function dailyWords(){
   const pool=WORDS.filter(x=>wlen(x.w)<=maxWordLen());
-  const rnd=mulberry32(hashStr("daily-"+today()+"-lv"+level()));
+  const rnd=mulberry32(hashStr("daily-"+today()+"-t"+tier()));
   const a=pool.slice();
   for(let i=a.length-1;i>0;i--){const j=Math.floor(rnd()*(i+1));[a[i],a[j]]=[a[j],a[i]];}
   const c=a.slice(0,3);c.sort((x,y)=>wlen(x.w)-wlen(y.w));return c;
@@ -362,7 +365,13 @@ function refreshHome(){
   const d=state.days[today()];
   document.getElementById("dailyNew").style.display=(d&&d.dailyDone)?"none":"inline-block";
 }
-function streak(){let n=0;const d=new Date();for(;;){const k=ymd(d);if(state.days[k]&&state.days[k].played){n++;d.setDate(d.getDate()-1);}else break;}return n;}
+function streak(){
+  const d=new Date();
+  // きょう まだ やっていなくても、きのうまで つづいていれば れんぞくは いきている
+  if(!(state.days[ymd(d)]&&state.days[ymd(d)].played))d.setDate(d.getDate()-1);
+  let n=0;for(;;){const k=ymd(d);if(state.days[k]&&state.days[k].played){n++;d.setDate(d.getDate()-1);}else break;}
+  return n;
+}
 
 /* =========================================================
    グリフ（筆画）とレンダリング
@@ -396,7 +405,7 @@ let currentChar="",currentGlyph=null,currentStrokes=null;
 
 function fitCanvas(){
   const b=inkCanvas.parentElement.getBoundingClientRect();
-  CSS=Math.round(b.width);DPR=Math.min(window.devicePixelRatio||1,3);
+  CSS=Math.round(b.width);lastFitW=CSS;DPR=Math.min(window.devicePixelRatio||1,3);
   [guideCanvas,inkCanvas].forEach(c=>{c.width=Math.round(CSS*DPR);c.height=Math.round(CSS*DPR);});
   gctx.setTransform(DPR,0,0,DPR,0,0);ictx.setTransform(DPR,0,0,DPR,0,0);
 }
@@ -429,8 +438,8 @@ function drawGuideStatic(){
 }
 
 /* 書き順アニメ */
-let animRAF=null,playToken=0,demoTimer=null;
-function cancelDemo(){playToken++;if(animRAF){cancelAnimationFrame(animRAF);animRAF=null;}if(demoTimer){clearTimeout(demoTimer);demoTimer=null;}}
+let animRAF=null,playToken=0,demoTimer=null,demoPlaying=false;
+function cancelDemo(){playToken++;demoPlaying=false;if(animRAF){cancelAnimationFrame(animRAF);animRAF=null;}if(demoTimer){clearTimeout(demoTimer);demoTimer=null;}}
 function renderPlaybackFrame(si,upto){
   const vb=currentGlyph.vb;
   drawGrid(gctx);
@@ -446,10 +455,10 @@ function renderPlaybackFrame(si,upto){
 }
 function playDemo(){
   if(!currentStrokes||!currentStrokes.length){return;}
-  cancelDemo();const myToken=++playToken;let si=0;
+  cancelDemo();const myToken=++playToken;let si=0;demoPlaying=true;
   function playStroke(){
     if(myToken!==playToken)return;
-    if(si>=currentStrokes.length){drawGuideStatic();return;}
+    if(si>=currentStrokes.length){demoPlaying=false;drawGuideStatic();return;}
     const st=currentStrokes[si];const n=st.pts.length;
     const dur=Math.min(1400,Math.max(450,st.len*15));const start=performance.now();
     Sound.play("tap");
@@ -653,9 +662,9 @@ function renderPoints(){
   document.getElementById("stStreak").textContent=streak();
   document.getElementById("stStars").textContent=state.totalStars;
   const lv=level();document.getElementById("lvName").textContent="レベル "+lv;
-  const cur=state.totalStars,base=(lv-1)*12,next=lv*12;
-  document.getElementById("lvBar").style.width=(lv>=5?100:Math.round((cur-base)/(next-base)*100))+"%";
-  document.getElementById("lvNext").textContent=lv>=5?"さいこう レベル！🎉":("つぎまで ⭐"+(next-cur));
+  const cur=state.totalStars,base=levelCum(lv),next=levelCum(lv+1);
+  document.getElementById("lvBar").style.width=(lv>=MAX_LEVEL?100:Math.round((cur-base)/(next-base)*100))+"%";
+  document.getElementById("lvNext").textContent=lv>=MAX_LEVEL?"さいこう レベル！🎉":("つぎまで ⭐"+(next-cur));
   const best=state.lastStreakCelebrated||0;const cs=streak();const top=Math.max(best,cs);
   document.getElementById("milestones").innerHTML=MILESTONES.map(m=>`<span class="ms ${top>=m?'got':''}">🔥${m}にち</span>`).join("");
   renderCalendar();
@@ -687,7 +696,15 @@ document.getElementById("setName").addEventListener("click",()=>{sheet.classList
 document.getElementById("setReset").addEventListener("click",()=>{if(confirm("きろくを ぜんぶ けしますか？（なまえ・ポイント・スタンプ すべて）")){state=JSON.parse(JSON.stringify(DEFAULT_STATE));save();sheet.classList.remove("on");goHome();}});
 
 /* ====== 初期化 ====== */
-window.addEventListener("resize",()=>{if(document.getElementById("trace").classList.contains("on")){cancelDemo();fitCanvas();drawGuide(currentChar);}});
+let lastFitW=0;
+window.addEventListener("resize",()=>{
+  if(!document.getElementById("trace").classList.contains("on"))return;
+  const w=Math.round(inkCanvas.parentElement.getBoundingClientRect().width);
+  if(Math.abs(w-lastFitW)<2)return;            // 幅が変わっていない（バーの開閉など）→ なにもしない
+  const wasPlaying=demoPlaying;
+  cancelDemo();fitCanvas();drawGuide(currentChar);
+  if(wasPlaying)demoTimer=setTimeout(()=>playDemo(),120);
+});
 document.addEventListener("visibilitychange",()=>{if(!document.hidden&&document.getElementById("home").classList.contains("on"))refreshHome();});
 buildKbd();updateSoundIcons();refreshHome();
 </script>
